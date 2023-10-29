@@ -73,12 +73,16 @@ if __name__ == "__main__":
     device          = torch.device('cuda' if torch.cuda.is_available() else 'cpu') #使用GPU还是CPU
     local_rank      = 0#默认为0
     rank            = 0#默认为0
+    #1.获取类
     class_names, num_classes = get_classes(classes_path)#获取类别和类别数量
     num_classes += 1 #类别数量加1 再加上背景类，一共是num_classes+1类
+    #2.获取anchors
     anchors = get_anchors(input_shape, anchors_size) #获取anchors 
+    #3.获取模型
     model = SSD300(num_classes, backbone, pretrained)#实例化模型
     weights_init(model)#初始化模型权重
-    
+    #4.加载预训练权重
+
     #根据预训练权重的Key和模型的Key进行加载
     if model_path != '':
         if local_rank == 0: 
@@ -100,10 +104,12 @@ if __name__ == "__main__":
             print("\nSuccessful Load Key:", str(load_key)[:500], "……\nSuccessful Load Key Num:", len(load_key))
             print("\nFail To Load Key:", str(no_load_key)[:500], "……\nFail To Load Key num:", len(no_load_key))
             print("\n\033[1;33;44m温馨提示，head部分没有载入是正常现象，Backbone部分没有载入是错误的。\033[0m")
-    
+    #5.得到损失函数
     criterion       = MultiboxLoss(num_classes, neg_pos_ratio=3.0)# 获得损失函数        
+
     scaler = None#混合精度训练器
     model_train     = model.train()#模型转为训练模式
+    #6. 读取训练集和验证集
     if Cuda:       
         model_train = torch.nn.DataParallel(model)#多GPU训练
         cudnn.benchmark = True#设置为True，那么每次运行卷积神经网络的时候都会去寻找最适合当前配置的高效算法，来达到优化运行效率的问题。
@@ -114,6 +120,7 @@ if __name__ == "__main__":
         val_lines   = f.readlines()
     num_train   = len(train_lines)#训练集的大小
     num_val     = len(val_lines)  #验证集的大小
+
     if local_rank == 0:
         show_config(
             classes_path = classes_path, model_path = model_path, input_shape = input_shape, \
@@ -124,8 +131,11 @@ if __name__ == "__main__":
         #   总训练epoch指的是遍历全部数据的总次数
         #   总训练步长指的是梯度下降的总次数 
         #   每个训练世代包含若干训练步长，每个训练步长进行一次梯度下降。
+        
+        #7.计算步长
+
         wanted_step = 5e4 # 想要的总步长
-        # 计算总步长
+        # 计算总步长 判读是否达到建议的总步长
         total_step  = num_train // Unfreeze_batch_size * UnFreeze_Epoch
         # Unfreeze_batch_size =8 
         # UnFreeze_Epoch = 200
@@ -137,15 +147,18 @@ if __name__ == "__main__":
             print("\n\033[1;33;44m[Warning] 使用%s优化器时，建议将训练总步长设置到%d以上。\033[0m"%(optimizer_type, wanted_step))
             print("\033[1;33;44m[Warning] 本次运行的总训练数据量为%d，Unfreeze_batch_size为%d，共训练%d个Epoch，计算出总训练步长为%d。\033[0m"%(num_train, Unfreeze_batch_size, UnFreeze_Epoch, total_step))
             print("\033[1;33;44m[Warning] 由于总训练步长为%d，小于建议总步长%d，建议设置总世代为%d。\033[0m"%(total_step, wanted_step, wanted_epoch))
+    
     time_str        = datetime.datetime.strftime(datetime.datetime.now(),'%Y_%m_%d_%H_%M_%S') #time_str是当前时间
     log_dir         = os.path.join(save_dir, "loss_" + str(time_str)) # log_dir路径是logs/loss_当前时间
+    #8.实例化LossHistory类 保存每次训练的loss
     loss_history    = LossHistory(log_dir, model, input_shape=input_shape)#实例化LossHistory类
 
-
+    
     if True:
         UnFreeze_flag = False
         batch_size = Unfreeze_batch_size
         #   判断当前batch_size，自适应调整学习率
+        # 9. 调整学习率
         nbs             = 64
         lr_limit_max    = 5e-2
         lr_limit_min    = 5e-5
@@ -153,7 +166,9 @@ if __name__ == "__main__":
         #Init_lr_fit的值计算为：min(max(8/64*2e-3, 5e-5), 5e-2) = 2e-3 *（1/8）=0.00025
         Min_lr_fit      = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2) #MIN_LR = 2e-5 batch_size = 8
         #Min_lr_fit的值计算为 min(max(8/64*2e-5, 5e-5*1e-2), 5e-2) =  2.5e-6
+        #10.SGD优化器
         optimizer = optim.SGD(model.parameters(), Init_lr_fit, momentum = momentum, nesterov=True, weight_decay = weight_decay)#选择优化器
+        #11.获得学习率下降的公式
         lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch) #   获得学习率下降的公式
         
 
@@ -163,6 +178,7 @@ if __name__ == "__main__":
         if epoch_step == 0 or epoch_step_val == 0:
             raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
         
+        #12.使用SSDDataset类实例化训练集和验证集的数据加载器
         train_dataset   = SSDDataset(train_lines, input_shape, anchors, batch_size, num_classes, train = True)#训练集的数据加载器
         val_dataset     = SSDDataset(val_lines, input_shape, anchors, batch_size, num_classes, train = False)#验证集的数据加载器
         
@@ -170,8 +186,8 @@ if __name__ == "__main__":
         train_sampler   = None
         val_sampler     = None
         shuffle         = True
-
         # 训练集和验证集的数据加载器
+        #13.使用DataLoader类实例化训练集和验证集的数据加载器
         gen             = DataLoader(train_dataset, shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True,
                                     drop_last=True, collate_fn=ssd_dataset_collate, sampler=train_sampler, 
                                     worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
@@ -179,11 +195,11 @@ if __name__ == "__main__":
                                     drop_last=True, collate_fn=ssd_dataset_collate, sampler=val_sampler, 
                                     worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
 
-    
-        #   开始模型训练
+        
+        #14. 开始模型训练
         for epoch in range(Init_Epoch, UnFreeze_Epoch):
             batch_size = Unfreeze_batch_size
-
+            
             #   判断当前batch_size，自适应调整学习率
             nbs             = 64
             lr_limit_max    =  5e-2
@@ -193,7 +209,7 @@ if __name__ == "__main__":
             #   获得学习率下降的公式
             lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
                     
-            epoch_step      = num_train // batch_size#
+            epoch_step      = num_train // batch_size
             epoch_step_val  = num_val // batch_size
 
             if epoch_step == 0 or epoch_step_val == 0:
@@ -211,8 +227,9 @@ if __name__ == "__main__":
                                         worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))#验证集的数据加载器
 
 
-            
+            #15.根据当前的epoch设置优化器的学习率
             set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
+            #16.训练模型
             fit_one_epoch(model_train, model, criterion, loss_history, optimizer, epoch, 
                     epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank)
   

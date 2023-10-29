@@ -64,7 +64,9 @@ class MultiboxLoss(nn.Module):
         # numboxes是8732
         
         y_pred          = torch.cat([y_pred[0], nn.Softmax(-1)(y_pred[1])], dim = -1)
+        # y_pred目前的shape为torch.Size([2, 8732, 25])
         #y_pred[0]是预测的框的位置，y_pred[1]是预测的框的类别
+        #y_pred[0] shape是torch.Size([2, 8732, 4])，y_pred[1] shape是torch.Size([2, 8732, 21])
         '''
         y_pred[0] 是一个张量，假设它包含了模型的某些预测值。它是拼接操作的第一个输入张量。
 
@@ -77,20 +79,26 @@ class MultiboxLoss(nn.Module):
         #   分类的loss
         #   batch_size,8732,21 -> batch_size,8732
         # --------------------------------------------- #
+        # 1.计算分类的loss y_true[:, :, 4:-1]表示取y_true的第4个维度到倒数第二个维度 5-24 y_pred[:, :, 4:]表示取y_pred的第4个维度到最后一个维度 4-24
         conf_loss = self._softmax_loss(y_true[:, :, 4:-1], y_pred[:, :, 4:])
         
         # --------------------------------------------- #
         #   框的位置的loss
         #   batch_size,8732,4 -> batch_size,8732
         # --------------------------------------------- #
+        # 2.计算框的位置的loss y_true[:, :, :4]表示取y_true的第一个维度到第四个维度 0-3 y_pred[:, :, :4]表示取y_pred的第一个维度到第四个维度 0-3
         loc_loss = self._l1_smooth_loss(y_true[:, :, :4],
                                         y_pred[:, :, :4])
 
         # --------------------------------------------- #
         #   获取所有的正标签的loss
         # --------------------------------------------- #
+        # 3.获取所有的正标签loc loss y_true[:, :, -1]表示取y_true的最后一个维度 -1 
+        # y_true[:, :, -1]表示是否包含物体
         pos_loc_loss = torch.sum(loc_loss * y_true[:, :, -1],
                                      axis=1)
+        # 4.获取所有的正标签分类loss y_true[:, :, -1]表示取y_true的最后一个维度 -1
+        # y_true[:, :, -1]表示是否包含物体
         pos_conf_loss = torch.sum(conf_loss * y_true[:, :, -1],
                                       axis=1)
 
@@ -98,59 +106,92 @@ class MultiboxLoss(nn.Module):
         #   每一张图的正样本的个数
         #   num_pos     [batch_size,]
         # --------------------------------------------- #
+        # 5.每一张图的正样本的个数 即每个batch中每张图的正样本的数量
         num_pos = torch.sum(y_true[:, :, -1], axis=-1)
-
+         
         # --------------------------------------------- #
         #   每一张图的负样本的个数
         #   num_neg     [batch_size,]
         # --------------------------------------------- #
+
+        # 6.每一张图的负样本的个数  取剩余的框的数量减去正样本的数量和neg_pos_ratio（3）倍数的正样本数量的最小值
         num_neg = torch.min(self.neg_pos_ratio * num_pos, num_boxes - num_pos)
-        # 找到了哪些值是大于0的
-        pos_num_neg_mask = num_neg > 0
+
+        # 7.pos_num_neg_mask shape是torch.Size([2, 8732]) 代表每张图的负样本的数量是否大于0
+        pos_num_neg_mask = num_neg > 0 
         # --------------------------------------------- #
         #   如果所有的图，正样本的数量均为0
         #   那么则默认选取100个先验框作为负样本
         # --------------------------------------------- #
-        has_min = torch.sum(pos_num_neg_mask)
         
+        has_min = torch.sum(pos_num_neg_mask)
+
         # --------------------------------------------- #
         #   从这里往后，与视频中看到的代码有些许不同。
         #   由于以前的负样本选取方式存在一些问题，
         #   我对该部分代码进行重构。
         #   求整个batch应该的负样本数量总和
         # --------------------------------------------- #
+
+        # 8.求整个batch应该的负样本数量总和 如果所有的图，正样本的数量均为0 那么则默认选取100个先验框作为负样本
         num_neg_batch = torch.sum(num_neg) if has_min > 0 else self.negatives_for_hard
-        #
+        
         # --------------------------------------------- #
         #   对预测结果进行判断，如果该先验框没有包含物体
         #   那么它的不属于背景的预测概率过大的话
         #   就是难分类样本
         # --------------------------------------------- #
         confs_start = 4 + self.background_label_id + 1
-        confs_end   = confs_start + self.num_classes - 1
+        #background_label_id=0
+        #confs_start=5 代表第5个维度开始是不属于背景的预测概率
 
+        confs_end   = confs_start + self.num_classes - 1
+        #confs_end=25 代表第25个维度结束是不属于背景的预测概率
+        
         # --------------------------------------------- #
         #   batch_size,8732
         #   把不是背景的概率求和，求和后的概率越大
         #   代表越难分类。
         # --------------------------------------------- #
         max_confs = torch.sum(y_pred[:, :, confs_start:confs_end], dim=2)
-
+        #y_pred[:, :, confs_start:confs_end]表示取y_pred的第5个维度到第25个维度 4-24
+        #torch.sum(y_pred[:, :, confs_start:confs_end], dim=2)表示对第三个维度求和
+        #max_confs shape是torch.Size([2, 8732]) 代表每张图的不属于背景的预测概率求和
+        # max_confs大的话，代表越难分类 anchors就是难分类样本
         # --------------------------------------------------- #
         #   只有没有包含物体的先验框才得到保留
         #   我们在整个batch里面选取最难分类的num_neg_batch个
         #   先验框作为负样本。
         # --------------------------------------------------- #
+        
+        # 9.只有没有包含物体的先验框才得到保留 这就是实际上不包含物体的anchors的所有种类预测概率求和
         max_confs   = (max_confs * (1 - y_true[:, :, -1])).view([-1])
-
+        #max_confs的shape是torch.Size([17464]) 代表所有的anchors的所有种类预测概率求和
+        #y_true[:, :, -1]表示取y_true的最后一个维度 -1
+        
         _, indices  = torch.topk(max_confs, k = int(num_neg_batch.cpu().numpy().tolist()))
+        #indices shape是torch.Size([100]) 代表选取的100个难分类样本的索引
+        #indices是max_confs中最大的100个值的索引
 
         neg_conf_loss = torch.gather(conf_loss.view([-1]), 0, indices)
-
+        #neg_conf_loss shape是torch.Size([100]) 代表选取的100个难分类样本的分类loss
+        #conf_loss.view([-1])表示将conf_loss的shape变成torch.Size([17464]) 代表所有的anchors的分类loss
+        #indices表示选取的100个难分类样本的索引
+        #torch.gather(conf_loss.view([-1]), 0, indices)表示选取的100个难分类样本的分类loss
+        
         # 进行归一化
         num_pos     = torch.where(num_pos != 0, num_pos, torch.ones_like(num_pos))
+        #num_pos shape是torch.Size([2]) 代表每张图的正样本的数量
+        #torch.ones_like(num_pos)表示生成一个和num_pos相同shape的全1张量
+        #torch.where(num_pos != 0, num_pos, torch.ones_like(num_pos))表示如果num_pos不等于0，那么就取num_pos，否则就取torch.ones_like(num_pos) 全一张量
+        
+
         total_loss  = torch.sum(pos_conf_loss) + torch.sum(neg_conf_loss) + torch.sum(self.alpha * pos_loc_loss)
-        total_loss  = total_loss / torch.sum(num_pos)
+        #total_loss shape是torch.Size([]) 代表总的loss
+        #torch.sum(pos_conf_loss)表示所有的正样本的分类loss相加
+        # 正样本的分类loss + 负样本的分类loss + alpha * 正样本的框的位置loss （负样本取的数量为neg_pos_ratio倍的正样本）
+
+        total_loss  = total_loss / torch.sum(num_pos)#torch.sum(num_pos)表示所有的正样本的数量相加
         return total_loss
 
 

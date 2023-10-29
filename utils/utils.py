@@ -21,7 +21,7 @@ def cvtColor(image):
 #   对输入图像进行resize
 #---------------------------------------------------#
 def resize_image(image, size, letterbox_image):
-    iw, ih  = image.size
+    iw, ih  = image.size #原图像大小
     w, h    = size
     if letterbox_image:
         scale   = min(w/iw, h/ih)

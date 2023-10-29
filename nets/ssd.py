@@ -186,7 +186,7 @@ class SSD300(nn.Module):
         conf    = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
         
         #-------------------------------------------------------------#
-        #   loc会reshape到batch_size, num_anchors, 4
+        #   loc会reshape到batch_size, num_anchors, 4 xywh
         #   conf会reshap到batch_size, num_anchors, self.num_classes
         #-------------------------------------------------------------#     
         output = (
